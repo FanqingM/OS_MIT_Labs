@@ -1,0 +1,7 @@
+[
+{
+  "directory": "/Users/xujingnan/GitHub/lab",
+  "command": "/Library/Developer/CommandLineTools/usr/bin/cc  -I/Users/xujingnan/GitHub/lab/inc -I/Users/xujingnan/GitHub/lab/kern -I/Users/xujingnan/GitHub/lab/lib -I/Users/xujingnan/GitHub/lab/boot -I/Users/xujingnan/GitHub/lab   -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX10.15.sdk   -o CMakeFiles/lab.dir/boot/main.c.o   -c /Users/xujingnan/GitHub/lab/boot/main.c",
+  "file": "/Users/xujingnan/GitHub/lab/boot/main.c"
+}
+]
