@@ -352,8 +352,8 @@ pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create) {
   // if (!(p[tindex] & PTE_P))	//if pte not exist
   // 	if (create) {
   // 		struct PageInfo *pg = page_alloc(ALLOC_ZERO);	//alloc a zero
-  // page 		pg->pp_ref++; 		p[tindex] = page2pa(pg) | PTE_P; 	}
-  // else return NULL;
+  // page 		pg->pp_ref++; 		p[tindex] = page2pa(pg) | PTE_P;
+  // } else return NULL;
 
   return p + tindex;
 }

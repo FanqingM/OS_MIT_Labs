@@ -48,10 +48,10 @@ RM = /usr/local/Cellar/cmake/3.15.2/bin/cmake -E remove -f
 EQUALS = =
 
 # The top-level source directory on which CMake was run.
-CMAKE_SOURCE_DIR = /Users/xujingnan/GitHub/lab
+CMAKE_SOURCE_DIR = /Users/xujingnan/GitHub/OSCD/JOS
 
 # The top-level build directory on which CMake was run.
-CMAKE_BINARY_DIR = /Users/xujingnan/GitHub/lab
+CMAKE_BINARY_DIR = /Users/xujingnan/GitHub/OSCD/JOS
 
 #=============================================================================
 # Targets provided globally by CMake.
@@ -80,9 +80,9 @@ edit_cache/fast: edit_cache
 
 # The main all target
 all: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/xujingnan/GitHub/lab/CMakeFiles /Users/xujingnan/GitHub/lab/CMakeFiles/progress.marks
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles /Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles/progress.marks
 	$(MAKE) -f CMakeFiles/Makefile2 all
-	$(CMAKE_COMMAND) -E cmake_progress_start /Users/xujingnan/GitHub/lab/CMakeFiles 0
+	$(CMAKE_COMMAND) -E cmake_progress_start /Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
@@ -111,17 +111,17 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named lab
+# Target rules for targets named JOS
 
 # Build rule for target.
-lab: cmake_check_build_system
-	$(MAKE) -f CMakeFiles/Makefile2 lab
-.PHONY : lab
+JOS: cmake_check_build_system
+	$(MAKE) -f CMakeFiles/Makefile2 JOS
+.PHONY : JOS
 
 # fast build rule for target.
-lab/fast:
-	$(MAKE) -f CMakeFiles/lab.dir/build.make CMakeFiles/lab.dir/build
-.PHONY : lab/fast
+JOS/fast:
+	$(MAKE) -f CMakeFiles/JOS.dir/build.make CMakeFiles/JOS.dir/build
+.PHONY : JOS/fast
 
 boot/main.o: boot/main.c.o
 
@@ -129,7 +129,7 @@ boot/main.o: boot/main.c.o
 
 # target to build an object file
 boot/main.c.o:
-	$(MAKE) -f CMakeFiles/lab.dir/build.make CMakeFiles/lab.dir/boot/main.c.o
+	$(MAKE) -f CMakeFiles/JOS.dir/build.make CMakeFiles/JOS.dir/boot/main.c.o
 .PHONY : boot/main.c.o
 
 boot/main.i: boot/main.c.i
@@ -138,7 +138,7 @@ boot/main.i: boot/main.c.i
 
 # target to preprocess a source file
 boot/main.c.i:
-	$(MAKE) -f CMakeFiles/lab.dir/build.make CMakeFiles/lab.dir/boot/main.c.i
+	$(MAKE) -f CMakeFiles/JOS.dir/build.make CMakeFiles/JOS.dir/boot/main.c.i
 .PHONY : boot/main.c.i
 
 boot/main.s: boot/main.c.s
@@ -147,7 +147,7 @@ boot/main.s: boot/main.c.s
 
 # target to generate assembly for a file
 boot/main.c.s:
-	$(MAKE) -f CMakeFiles/lab.dir/build.make CMakeFiles/lab.dir/boot/main.c.s
+	$(MAKE) -f CMakeFiles/JOS.dir/build.make CMakeFiles/JOS.dir/boot/main.c.s
 .PHONY : boot/main.c.s
 
 # Help Target
@@ -158,7 +158,7 @@ help:
 	@echo "... depend"
 	@echo "... rebuild_cache"
 	@echo "... edit_cache"
-	@echo "... lab"
+	@echo "... JOS"
 	@echo "... boot/main.o"
 	@echo "... boot/main.i"
 	@echo "... boot/main.s"

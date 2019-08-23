@@ -1,10 +1,10 @@
 cmake_minimum_required (VERSION 3.15)
-project(lab)
+project(JOS)
 include_directories(
         ${PROJECT_SOURCE_DIR}/inc
         ${PROJECT_SOURCE_DIR}/kern
         ${PROJECT_SOURCE_DIR}/lib
         ${PROJECT_SOURCE_DIR}/boot
 )
-add_executable(lab boot/main.c)
-target_include_directories(lab PUBLIC ${CMAKE_SOURCE_DIR})
+add_executable(JOS boot/main.c)
+target_include_directories(JOS PUBLIC ${CMAKE_SOURCE_DIR})
