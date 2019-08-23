@@ -1,3 +1,0 @@
-/Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles/rebuild_cache.dir
-/Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles/edit_cache.dir
-/Users/xujingnan/GitHub/OSCD/JOS/CMakeFiles/JOS.dir

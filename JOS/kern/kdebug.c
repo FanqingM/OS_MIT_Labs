@@ -52,7 +52,7 @@ stab_binsearch(const struct Stab *stabs, int *region_left, int *region_right,
 	       int type, uintptr_t addr)
 {
 	int l = *region_left, r = *region_right, any_matches = 0;
-
+	
 	while (l <= r) {
 		int true_m = (l + r) / 2, m = true_m;
 
@@ -179,6 +179,11 @@ debuginfo_eip(uintptr_t addr, struct Eipdebuginfo *info)
 	//	Look at the STABS documentation and <inc/stab.h> to find
 	//	which one.
 	// Your code here.
+	stab_binsearch(stabs, &lline, &rline, N_SLINE, addr);
+	if(lline > rline)
+		return -1;
+	else
+		info->eip_line = stabs[lline].n_desc;
 
 
 	// Search backwards from the line number for the relevant filename
