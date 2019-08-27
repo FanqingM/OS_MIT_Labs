@@ -88,8 +88,8 @@ static void *boot_alloc(uint32_t n) {
   // to a multiple of PGSIZE.
   //
   // LAB 2: Your code here.
-  cprintf("boot_alloc memory at %x\n", nextfree);
-  cprintf("Next memory at %x\n", ROUNDUP((char *)(nextfree + n), PGSIZE));
+  //cprintf("boot_alloc memory at %x\n", nextfree);
+  //cprintf("Next memory at %x\n", ROUNDUP((char *)(nextfree + n), PGSIZE));
   if (n != 0) {
     char *next = nextfree;
     nextfree = ROUNDUP((char *)(nextfree + n), PGSIZE);
@@ -142,9 +142,9 @@ void mem_init(void) {
   // Your code goes here:
   pages = (struct PageInfo *)boot_alloc(sizeof(struct PageInfo) * npages);
 
-  cprintf("npages: %d\n", npages);
-  cprintf("npages_basemem: %d\n", npages_basemem);
-  cprintf("pages: %x\n", pages);
+  //cprintf("npages: %d\n", npages);
+  //cprintf("npages_basemem: %d\n", npages_basemem);
+  //cprintf("pages: %x\n", pages);
 
   //////////////////////////////////////////////////////////////////////
   // Now that we've allocated the initial kernel data structures, we set
@@ -170,7 +170,7 @@ void mem_init(void) {
   //    - pages itself -- kernel RW, user NONE
   // Your code goes here:
   boot_map_region(kern_pgdir, UPAGES, PTSIZE, PADDR(pages), PTE_U);
-  cprintf("PADDR(pages) %x\n", PADDR(pages));
+  //cprintf("PADDR(pages) %x\n", PADDR(pages));
   //////////////////////////////////////////////////////////////////////
   // Use the physical memory that 'bootstack' refers to as the kernel
   // stack.  The kernel stack grows down from virtual address KSTACKTOP.
@@ -185,7 +185,7 @@ void mem_init(void) {
 
   boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE, KSTKSIZE, PADDR(bootstack),
                   PTE_W);
-  cprintf("PADDR(bootstack) %x\n", PADDR(bootstack));
+  //cprintf("PADDR(bootstack) %x\n", PADDR(bootstack));
 
   //////////////////////////////////////////////////////////////////////
   // Map all of physical memory at KERNBASE.
@@ -263,9 +263,9 @@ void page_init(void) {
                              0xf0000000,
                          PGSIZE) /
             PGSIZE;
-  cprintf("pageinfo size: %d\n", sizeof(struct PageInfo));
-  cprintf("%x\n", ((char *)pages) + (sizeof(struct PageInfo) * npages));
-  cprintf("med=%d\n", med);
+  //cprintf("pageinfo size: %d\n", sizeof(struct PageInfo));
+  //cprintf("%x\n", ((char *)pages) + (sizeof(struct PageInfo) * npages));
+  //cprintf("med=%d\n", med);
   for (i = med; i < npages; i++) {
     pages[i].pp_ref = 0;
     pages[i].pp_link = page_free_list;
@@ -371,14 +371,14 @@ pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create) {
 static void boot_map_region(pde_t *pgdir, uintptr_t va, size_t size,
                             physaddr_t pa, int perm) {
   int i;
-  cprintf("Virtual Address %x mapped to Physical Address %x\n", va, pa);
+  //cprintf("Virtual Address %x mapped to Physical Address %x\n", va, pa);
   for (i = 0; i < size / PGSIZE; ++i, va += PGSIZE, pa += PGSIZE) {
     pte_t *pte = pgdir_walk(pgdir, (void *)va, 1); // create
     if (!pte)
       panic("boot_map_region panic, out of memory");
     *pte = pa | perm | PTE_P;
   }
-  cprintf("Virtual Address %x mapped to Physical Address %x\n", va, pa);
+  //cprintf("Virtual Address %x mapped to Physical Address %x\n", va, pa);
 }
 
 //
