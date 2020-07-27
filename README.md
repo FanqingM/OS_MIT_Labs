@@ -349,3 +349,185 @@ while ((ch = *(unsigned char *) fmt++) != '%') {        //先将非格式化字�
             goto number;
 ```
 
+> Explain the interface between `printf.c` and `console.c`. Specifically, what function does `console.c`export? How is this function used by `printf.c`?
+
+这两者的接口为`cputchar`，作用是往输出流中放入一个字符
+
+
+
+> Explain the following from `console.c`:
+>
+> ```c
+> if (crt_pos >= CRT_SIZE) {
+> 	int i;
+> memcpy(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
+> for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
+> 		crt_buf[i] = 0x0700 | ' ';
+> 	crt_pos -= CRT_COLS;
+>   }
+> ```
+
+整体上移一行，并在新的一行中填入空格
+
+
+
+> For the following questions you might wish to consult the notes for Lecture 2. These notes cover GCC’s calling convention on the x86.
+>
+> Trace the execution of the following code step-by-step:
+>
+> ```c
+> int x = 1, y = 3, z = 4;
+> cprintf("x %d, y %x, z %d\n", x, y, z);
+> ```
+>
+> - In the call to `cprintf()`, to what does `fmt` point? To what does `ap` point?
+
+`fmt`指向格式化字符串 `"x %d,y %x,z %d\n"`,`ap`指向第一个可选参数`x`
+
+
+
+> Run the following code.
+>
+> ```c
+> unsigned int i = 0x00646c72;
+>     cprintf("H%x Wo%s", 57616, &i);
+> ```
+>
+> What is the output? Explain how this output is arrived out in the step-by-step manner of the previous exercise
+
+output：
+
+```c
+He110 World
+```
+
+- 57616 == 0xe110
+- 0x64 == ‘d’, 0x6c == ‘l’, 0x72 == ‘r’
+
+
+
+> In the following code, what is going to be printed after`y=`? (note: the answer is not a specific value.) Why does this happen?
+>
+> ```c
+> cprintf("x=%d y=%d", 3);
+> ```
+
+一个在栈上相邻的值
+
+
+
+> 让我们假设GCC改变了它的调用约定，以便它按照声明顺序将参数推入堆栈，从而最后一个参数被推入。
+> 你必须如何改变cprintfor它的接口，以便它仍然有可能传递一个可变数量的参数?
+
+分析：
+
+- 对于`cprintf`而言，需要知道`fmt`的内容才能确定参数的数量
+- 对于这一种传参方式，需要知道参数的数量才能确定第一个参数的位置
+
+所以解决方案可能有：
+
+1. 新增一个参数，内容为参数数量，在参数表的末尾
+2. 只接受固定的两个参数，第一个为`fmt`，第二个为以NULL结尾的链表的首地址，链表中为参数，类似于`char **argv`
+3. 将可选参数放在前面，`fmt`在最后
+
+
+
+### The Stack
+
+1. 执行call指令前，函数调用者将参数入栈，按照函数列表从右到左的顺序入栈。
+2. call指令会自动将当前eip入栈，ret指令将自动从栈中弹出该值到eip寄存器。
+3. 被调用函数负责：将ebp入栈，esp的值赋给ebp。
+
+![lab1_3](https://github.com/PtNan/OSCD/raw/lab1/assets/lab1_3.png)
+
+### Exercise 9
+
+> 确定内核初始化其堆栈的位置，以及它的堆栈在内存中的确切位置。
+> 内核如何为它的堆栈保留空间?
+> 并且在这个保留区域的“结束”是堆栈指针初始化指向?
+
+/kern/entry.S:75
+
+```bash
+# Set the stack pointer
+movl	$(bootstacktop),%esp
+```
+
+### Exercise10
+
+> 要熟悉x86上的C调用约定，可以在`obj/kern/kernel.asm`中找到`test_backtrace`函数的地址。
+> 在那里设置一个断点，并检查在内核启动后每次调用断点时会发生什么。
+> 每个`test_backtrace`的递归嵌套层在堆栈上推入多少32位的单词，这些单词是什么?
+
+发现每次调用esp缩小0x20，即8 words
+
+### Exercise 11
+
+> 实现上面指定的backtrace函数。
+> 请使用与示例相同的格式，否则评分脚本将会混淆。
+> 当您认为您已经使它正常工作时，运行make grade，看看它的输出是否符合我们的评分脚本的期望，如果不符合，就修复它。
+> 在你提交了你的实验1代码之后，你可以随意改变backtrace函数的输出格式。
+
+既然已经提供了`read_ebp`函数，那么顺着ebp一路摸上去就能得到`return address`和各个参数：
+
+```c
+ebp = (unsigned int *)read_ebp();
+for (;ebp != NULL;) {
+	cprintf("eip %8x  ebp %8x  args %08x %08x %08x %08x %08x\n", 
+			ebp[1], ebp, ebp[2], ebp[3], ebp[4], ebp[5], ebp[6]);
+	ebp = (unsigned int *)(*ebp);
+}
+```
+
+这些在ics的buffer overflow中见的多了。另一个问题是什么时候停止循环。在entry.S中发现:(entry.S:73)
+
+```bash
+movl	$0x0,%ebp			# nuke frame pointer
+```
+
+也就是说，初始化时ebp为0，当发现ebp为0(NULL)时即可停止循环。
+
+### Exercise 12
+
+> 通过插入对stab_binsearch的调用来查找地址的行号，完成debuginfo_eip的实现。
+> 向内核监视器添加一个backtrace命令，并扩展mon_backtrace的实现，调用debuginfo_eip并为表单的每个堆栈帧打印一行:
+
+```c
+int
+mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+{
+    uint32_t ebp, *ptr_ebp;
+    struct Eipdebuginfo info;
+    ebp = read_ebp();
+    cprintf("Stack backtrace:\n");
+    while (ebp != 0) {
+        ptr_ebp = (uint32_t *)ebp;
+        cprintf("\tebp %x  eip %x  args %08x %08x %08x %08x %08x\n", ebp, ptr_ebp[1], ptr_ebp[2], ptr_ebp[3], ptr_ebp[4], ptr_ebp[5], ptr_ebp[6]);
+        if (debuginfo_eip(ptr_ebp[1], &info) == 0) {
+            uint32_t fn_offset = ptr_ebp[1] - info.eip_fn_addr;
+            cprintf("\t\t%s:%d: %.*s+%d\n", info.eip_file, info.eip_line,info.eip_fn_namelen,  info.eip_fn_name, fn_offset);
+        }
+        ebp = *ptr_ebp;
+    }
+    return 0;
+}
+```
+
+### Lab1 总结
+
+------
+
+经过这个Lab，我们主要了解了以下内容：
+
+1. 启动顺序：BIOS -> Boot Loader -> Kernel
+2. 各自的简介：
+
+- BIOS:
+  位于 `0x000F 0000` 至 `0x0010 0000`共 64kB 空间中。
+  初始化 PCI 总线以及其他设备，搜索能启动的设备例如软盘、硬盘、光驱等，如果发现了启动盘，就读取盘内的 boot loader 并移交控制权。
+- Boot Loader:
+  位于 `0x7c00`与`0x7dff` 共 512 byte 空间之中。
+  从实模式切换到保护模式，并将 kernel 读取到内存中。跳转到kernel执行。
+- Kernel:
+  位于 `0x10 0000` 开始的物理内存中。被映射到了`0xf010 0000`的高位地址上。
+  开启内存分页机制，启用虚拟内存，I/O的实现，栈的初始化。
