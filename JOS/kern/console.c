@@ -5,10 +5,9 @@
 #include <inc/kbdreg.h>
 #include <inc/string.h>
 #include <inc/assert.h>
+#include <inc/csa.h>
 
 #include <kern/console.h>
-#include <kern/trap.h>
-#include <kern/picirq.h>
 
 static void cons_intr(int (*proc)(void));
 static void cons_putc(int c);
@@ -102,9 +101,6 @@ serial_init(void)
 	(void) inb(COM1+COM_IIR);
 	(void) inb(COM1+COM_RX);
 
-	// Enable serial interrupts
-	if (serial_exists)
-		irq_setmask_8259A(irq_mask_8259A & ~(1<<IRQ_SERIAL));
 }
 
 
@@ -131,11 +127,11 @@ lpt_putc(int c)
 /***** Text-mode CGA/VGA display output *****/
 
 static unsigned addr_6845;
-static uint16_t *crt_buf;		//现存地址，开启分页后现存的起始地址为0xF00B8000
-static uint16_t crt_pos;		//参见《x86汇编语言》p143光标位置
+static uint16_t *crt_buf;
+static uint16_t crt_pos;
 
 static void
-cga_init(void)					//获取光标位置crt_pos,获取显存地址crt_buf
+cga_init(void)
 {
 	volatile uint16_t *cp;
 	uint16_t was;
@@ -168,8 +164,9 @@ static void
 cga_putc(int c)
 {
 	// if no attribute given, then use black on white
+	if(!csa) csa = 0x0700;
 	if (!(c & ~0xFF))
-		c |= 0x0700;
+		c |= csa;
 
 	switch (c & 0xff) {
 	case '\b':
@@ -178,27 +175,27 @@ cga_putc(int c)
 			crt_buf[crt_pos] = (c & ~0xff) | ' ';
 		}
 		break;
-	case '\n':					//如果遇到的是换行符，将光标位置下移一行，也就是加上80（每一行占80个光标位置）
+	case '\n':
 		crt_pos += CRT_COLS;
 		/* fallthru */
-	case '\r':					//如果遇到的是回车符，将光标移到当前行的开头，也就是crt_post-crt_post%80
+	case '\r':
 		crt_pos -= (crt_pos % CRT_COLS);
 		break;
-	case '\t':					//制表符很显然
+	case '\t':
 		cons_putc(' ');
 		cons_putc(' ');
 		cons_putc(' ');
 		cons_putc(' ');
 		cons_putc(' ');
 		break;
-	default:					//普通字符的情况，直接将ascii码填到显存中
+	default:
 		crt_buf[crt_pos++] = c;		/* write the character */
 		break;
 	}
 
 	// What is the purpose of this?
-	if (crt_pos >= CRT_SIZE) {		//判断是否需要滚屏。文本模式下一页屏幕最多显示25*80个字符，
-		int i;						//超出时，需要将2~25行往上提一行，最后一行用黑底白字的空白块填充
+	if (crt_pos >= CRT_SIZE) {
+		int i;
 
 		memmove(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
 		for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
@@ -206,7 +203,7 @@ cga_putc(int c)
 		crt_pos -= CRT_COLS;
 	}
 
-	/* move that little blinky thing */		//移动光标
+	/* move that little blinky thing */
 	outb(addr_6845, 14);
 	outb(addr_6845 + 1, crt_pos >> 8);
 	outb(addr_6845, 15);
@@ -378,9 +375,6 @@ kbd_intr(void)
 static void
 kbd_init(void)
 {
-	// Drain the kbd buffer so that QEMU generates interrupts.
-	kbd_intr();
-	irq_setmask_8259A(irq_mask_8259A & ~(1<<IRQ_KBD));
 }
 
 
