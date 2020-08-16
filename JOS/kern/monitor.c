@@ -10,6 +10,7 @@
 #include <kern/console.h>
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
+#include <kern/trap.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -24,6 +25,7 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+	{ "backtrace", "Stack backtrace", mon_backtrace}
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -57,42 +59,23 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
-	uint32_t* ebp = (uint32_t*) read_ebp();
-	cprintf("Stack backtrace:\n");
-	while(ebp){
-		cprintf("ebp %x  ebp %x  args", ebp, *(ebp+1));
-		cprintf(" %x", *(ebp+2));
-		cprintf(" %x", *(ebp+3));
-		cprintf(" %x", *(ebp+4));
-		cprintf(" %x", *(ebp+5));
-		cprintf(" %x\n", *(ebp+6));
-		ebp = (uint32_t*) *ebp;
-	}
 	// Your code here.
+	uint32_t *ebp = (uint32_t *)read_ebp();
+	struct Eipdebuginfo eipdebuginfo;
+	while (ebp != 0) {
+		//打印ebp, eip, 最近的五个参数
+		uint32_t eip = *(ebp + 1);
+		cprintf("ebp %08x eip %08x args %08x %08x %08x %08x %08x\n", ebp, eip, *(ebp + 2), *(ebp + 3), *(ebp + 4), *(ebp + 5), *(ebp + 6));
+		//打印文件名等信息
+		debuginfo_eip((uintptr_t)eip, &eipdebuginfo);
+		cprintf("%s:%d", eipdebuginfo.eip_file, eipdebuginfo.eip_line);
+		cprintf(": %.*s+%d\n", eipdebuginfo.eip_fn_namelen, eipdebuginfo.eip_fn_name, eipdebuginfo.eip_fn_addr);
+		//更新ebp
+		ebp = (uint32_t *)(*ebp);
+	}
 	return 0;
 }
 
-int backtrace(int argc, char **argv, struct Trapframe *tf)
-{
-	uint32_t *ebp = (uint32_t*) read_ebp();
-	cprintf("Stack backtrace:\n");
-	while(ebp){
-		uint32_t eip = ebp[1];
-		cprintf("ebp %x  eip %x  args", ebp, eip);
-		int i;
-		for(i = 2; i <= 6; ++i)
-			cprintf(" %08.x",ebp[i]);
-		cprintf("\n");
-		struct Eipdebuginfo info;
-		debuginfo_eip(eip, &info);
-		cprintf("\t%s:%d: %.*s+%d\n",
-			info.eip_file, info.eip_line,
-			info.eip_fn_namelen, info.eip_fn_name,
-			eip-info.eip_fn_addr);
-		ebp = (uint32_t*) *ebp	;
-	}
-	return 0;
-}
 
 
 /***** Kernel monitor command interpreter *****/
@@ -146,7 +129,9 @@ monitor(struct Trapframe *tf)
 
 	cprintf("Welcome to the JOS kernel monitor!\n");
 	cprintf("Type 'help' for a list of commands.\n");
-	cprintf("%m%s\n%m%s\n%m%s\n",0x0100,"blue",0x0200,"green",0x0400,"red");
+
+	if (tf != NULL)
+		print_trapframe(tf);
 
 	while (1) {
 		buf = readline("K> ");

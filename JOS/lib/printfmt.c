@@ -7,7 +7,6 @@
 #include <inc/string.h>
 #include <inc/stdarg.h>
 #include <inc/error.h>
-#include <inc/csa.h>
 
 /*
  * Space or zero padding and a field width are supported for the numeric
@@ -27,6 +26,8 @@ static const char * const error_string[MAXERROR] =
 	[E_NO_MEM]	= "out of memory",
 	[E_NO_FREE_ENV]	= "out of environments",
 	[E_FAULT]	= "segmentation fault",
+	[E_IPC_NOT_RECV]= "env is not recving",
+	[E_EOF]		= "unexpected end of file",
 };
 
 /*
@@ -90,15 +91,13 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
 	char padc;
 
 	while (1) {
-		while ((ch = *(unsigned char *) fmt++) != '%') {
-			if (ch == '\0'){
-				csa = 0x0700;
+		while ((ch = *(unsigned char *) fmt++) != '%') {		//先将非格式化字符输出到控制台。
+			if (ch == '\0')										//如果没有格式化字符直接返回
 				return;
-			}
 			putch(ch, putdat);
 		}
 
-		// Process a %-escape sequence
+		// Process a %-escape sequence							//接着处理格式化字符
 		padc = ' ';
 		width = -1;
 		precision = -1;
@@ -208,12 +207,11 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
 
 		// (unsigned) octal
 		case 'o':
-			// Replace this with your code.
-			num = getuint(&ap,lflag);
+			// 从ap指向的可变字符串中获取输出的值
+			num = getuint(&ap, lflag);
+			//设置基数为8
 			base = 8;
 			goto number;
-			break;
-
 		// pointer
 		case 'p':
 			putch('0', putdat);
@@ -235,11 +233,7 @@ vprintfmt(void (*putch)(int, void*), void *putdat, const char *fmt, va_list ap)
 		case '%':
 			putch(ch, putdat);
 			break;
-		
-		case 'm':
-			num = getint(&ap, lflag);
-			csa = num;
-			break;
+
 		// unrecognized escape sequence - just print it literally
 		default:
 			putch('%', putdat);
