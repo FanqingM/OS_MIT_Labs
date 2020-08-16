@@ -21,7 +21,8 @@ sched_yield(void)
 	//
 	// If no envs are runnable, but the environment previously
 	// running on this CPU is still ENV_RUNNING, it's okay to
-	// choose that environment.
+	// choose that environment. Make sure curenv is not null before
+	// dereferencing it.
 	//
 	// Never choose an environment that's currently running on
 	// another CPU (env_status == ENV_RUNNING). If there are
@@ -40,7 +41,7 @@ sched_yield(void)
 			env_run(&envs[j]);
 		}
 	}
-	if (curenv && curenv->env_status == ENV_RUNNING) {
+	if (curenv && curenv->env_status == ENV_RUNNING) {		//这是必须的，假设当前只有一个Env，如果没有这个判断，那么这个CPU将会停机
 		env_run(curenv);
 	}
 	// sched_halt never returns

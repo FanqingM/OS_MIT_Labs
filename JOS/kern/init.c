@@ -47,13 +47,19 @@ i386_init(void)
 	// Starting non-boot CPUs
 	boot_aps();		//将初始化代码拷贝到MPENTRY_PADDR处，然后依次启动所有AP
 
+	// Start fs.
+	ENV_CREATE(fs_fs, ENV_TYPE_FS);		//创建文件系统Env
+
 #if defined(TEST)
 	// Don't touch -- used by grading script!
 	ENV_CREATE(TEST, ENV_TYPE_USER);
 #else
 	// Touch all you want.
-	ENV_CREATE(user_dumbfork, ENV_TYPE_USER);
+	ENV_CREATE(user_spawnhello, ENV_TYPE_USER);
 #endif // TEST*
+
+	// Should not be necessary - drains keyboard because interrupt has given up.
+	kbd_intr();
 
 	// Schedule and run the first user environment!
 	sched_yield();
