@@ -1,533 +1,351 @@
-### 环境配置
+# LAB 5
 
-实验环境：`ubuntu 16.04 32bit`，使用docker创建Ububtu环境
+在该lab实现一个文件系统以及相关功能。
 
-首先安装有关工具
+> 该文件系统比较简单，不包括inode，仅有基本的功能
 
-```bash
-apt-get update
-mkdir ~/6.828
-cd ~/6.828
-git clone https://github.com/mit-pdos/6.828-qemu.git qemu
-./configure --disable-kvm --disable-werror --target-list="i386-softmmu x86_64-softmmu"
-sudo apt-get install libsdl1.2-dev libtool-bin libglib2.0-dev libz-dev libpixman-1-dev
-make && make install
+### File System Preliminaries
+
+#### On-Disk File System Structure
+- 不使用inode
+- 块大小为4096byte
+- block 0 保存boot loader和分区表
+- block 1 保存super block
+- block 2 保存bitmap
+- 之后的block保存文件
+
+##### Super Block
+```C
+struct Super {
+    uint32_t s_magic;       // Magic number: FS_MAGIC
+    uint32_t s_nblocks;     // Total number of blocks on disk
+    struct File s_root;     // Root directory node
+};
 ```
-
-环境配置过程中出现多处bug，使用https://xinqiu.me/2016/10/15/MIT-6.828-1/中提供的方法做了修复
-
-# Lab1
-
-clone项目
-
-```bash
-mkdir ~/6.828
-cd ~/6.828
-git clone https://pdos.csail.mit.edu/6.828/2018/jos.git lab` `cd lab
+##### File Meta-data
+File结构定义在inc/fs.h中
+```C
+struct File {
+    char f_name[MAXNAMELEN];    // filename
+    off_t f_size;           // file size in bytes
+    uint32_t f_type;        // file type
+    // Block pointers.
+    // A block is allocated iff its value is != 0.
+    uint32_t f_direct[NDIRECT]; // direct blocks
+    uint32_t f_indirect;        // indirect block
+    // Pad out to 256 bytes; must do arithmetic in case we're compiling
+    // fsformat on a 64-bit machine.
+    uint8_t f_pad[256 - MAXNAMELEN - 8 - 4*NDIRECT - 4];
+} __attribute__((packed));  // required only on some 64-bit machines
 ```
+我们知道super block中也有一个File结构，为root。File决定了文件类型是file还是directory，同时file的两个数组，直接指向10个，间接指向1024个，总计1034个block号，大约3GB的空间。
 
-运行qemu-nox（qemu为有GUI版本，对于Linux Server需要运行qemu-nox）
-
-```bash
-make qemu-nox
+### The File System
+#### Disk Access
+##### Exercise 1
+文件系统进程的type为ENV_TYPE_FS，需要修改env_create()，如果type是ENV_TYPE_FS，需要给该进程IO权限。
+```C
+if (type == ENV_TYPE_FS) {
+    e->env_tf.tf_eflags |= FL_IOPL_MASK;
+}
 ```
+仅当进程type是FS的时候，拥有访问IO的权限。
+#### The Block Cache
+文件系统进程保留从0x10000000 (DISKMAP)到0xD0000000 (DISKMAP+DISKMAX)固定3GB的内存空间作为磁盘的缓存。需要像LAB 2一样进行映射。
+同时我们使用按需加载。
+##### Exercise 2
+实现bc_pgfault()和flush_block()。
+`bc_pgfault()`
+```C
+static void bc_pgfault(struct UTrapframe *utf) {
+  void *addr = (void *)utf->utf_fault_va;
+  uint32_t blockno = ((uint32_t)addr - DISKMAP) / BLKSIZE;
+  int r;
 
-运行成功
+  // Check that the fault was within the block cache region
+  if (addr < (void *)DISKMAP || addr >= (void *)(DISKMAP + DISKSIZE))
+    panic("page fault in FS: eip %08x, va %08x, err %04x", utf->utf_eip, addr,
+          utf->utf_err);
 
-## Part 1: PC Bootstrap
+  // Sanity check the block number.
+  if (super && blockno >= super->s_nblocks)
+    panic("reading non-existent block %08x\n", blockno);
 
-物理空间内存地址可以由下图描述：
+  // Allocate a page in the disk map region, read the contents
+  // of the block from the disk into that page.
+  // Hint: first round addr to page boundary. fs/ide.c has code to read
+  // the disk.
+  //
+  // LAB 5: you code here:
+  addr = ROUNDDOWN(addr, PGSIZE);
+  sys_page_alloc(0, addr, PTE_W | PTE_U | PTE_P);
+  if ((r = ide_read(blockno * BLKSECTS, addr, BLKSECTS)) < 0)
+    panic("ide_read: %e", r);
 
-```bash
-+------------------+  <- 0xFFFFFFFF (4GB)
-|      32-bit      |
-|  memory mapped   |
-|     devices      |
-|                  |
-/\/\/\/\/\/\/\/\/\/\
+  // Clear the dirty bit for the disk block page since we just read the
+  // block from disk
+  if ((r = sys_page_map(0, addr, 0, addr, uvpt[PGNUM(addr)] & PTE_SYSCALL)) < 0)
+    panic("in bc_pgfault, sys_page_map: %e", r);
 
-/\/\/\/\/\/\/\/\/\/\
-|                  |
-|      Unused      |
-|                  |
-+------------------+  <- depends on amount of RAM
-|                  |
-|                  |
-| Extended Memory  |
-|                  |
-|                  |
-+------------------+  <- 0x00100000 (1MB)
-|     BIOS ROM     |
-+------------------+  <- 0x000F0000 (960KB)
-|  16-bit devices, |
-|  expansion ROMs  |
-+------------------+  <- 0x000C0000 (768KB)
-|   VGA Display    |
-+------------------+  <- 0x000A0000 (640KB)
-|                  |
-|    Low Memory    |
-|                  |
-+------------------+  <- 0x00000000
+  // Check that the block we read was allocated. (exercise for
+  // the reader: why do we do this *after* reading the block
+  // in?)
+  if (bitmap && block_is_free(blockno))
+    panic("reading free block %08x\n", blockno);
+}
 ```
+缺页处理函数，主要步骤为：
+1. 将地址对齐
+1. 分配一段内存
+1. 读ide磁盘的内容
+1. 拷贝页表
+1. 检查是否分配成功
 
-### Exercise 1 
+`flush_block()`
+```C
+void flush_block(void *addr) {
+  uint32_t blockno = ((uint32_t)addr - DISKMAP) / BLKSIZE;
+  int r;
+  if (addr < (void *)DISKMAP || addr >= (void *)(DISKMAP + DISKSIZE))
+    panic("flush_block of bad va %08x", addr);
 
-熟悉6.828参考页上提供的汇编语言材料。您现在不必阅读它们，但是几乎可以肯定的是，在读写x86程序集时，您会希望参考其中的一些内容。
-
-我们建议阅读Brennan的《内联汇编指南》中的“语法”部分。它很好地（并且非常简短地）描述了我们将与JOS中的GNU汇编器一起使用的AT＆T汇编语法。
-
-开两个终端： （都是在lab/中） 一个`make qemu-nox-gdb` 一个`make gdb` 就可以进入调试窗口
-
-![figure1](/Users/xuedixuedi/lxdThings/Code/github/OS_MIT_Labs/figure/figure1.png)
-
-### Exercise 2
-
-在gdb窗口看到了`[f000:fff0] 0xffff0: ljmp $0xf000,$0xe05b`，这个是第一条指令
-
-这条指令说明执行的起始物理地址为$0xf000
-
-前面`[f000:fff0]`分别表示代码寄存器CS内容为f000，指针寄存器IP内容为fff0，8086CPU会从内存CS*16+IP的位置开始，读取并执行一条指令。
-
-当前情况下就是 16 * 0xf000 + 0xfff0 = 0xf0000 + 0xfff0 = 0xffff0
-
-ljmp是跳转指令，CS不变还是0xf000，IP从0xfff0跳到0xe05b
-
-## Part2: The Boot Loader
-
-在地址0x7c00处设置断点，然后c运行到断点处，使用x/i来查看当前指令
-
-```bash
-(gdb) b *0x7c00
-Breakpoint 1 at 0x7c00
-(gdb) c
-Continuing.
-[   0:7c00] => 0x7c00:	cli
-
-Breakpoint 1, 0x00007c00 in ?? ()
-(gdb) x/i
-   0x7c01:	cld
-(gdb) x/16i
-   0x7c12:	out    %al,$0x64
-   0x7c14:	in     $0x64,%al
-   0x7c16:	test   $0x2,%al
-   0x7c18:	jne    0x7c14
-   0x7c1a:	mov    $0xdf,%al
-   0x7c1c:	out    %al,$0x60
-   0x7c1e:	lgdtw  0x7c64
-   0x7c23:	mov    %cr0,%eax
-   0x7c26:	or     $0x1,%eax
-   0x7c2a:	mov    %eax,%cr0
-   0x7c2d:	ljmp   $0x8,$0x7c32
-   0x7c32:	mov    $0xd88e0010,%eax
-   0x7c38:	mov    %ax,%es
-   0x7c3a:	mov    %ax,%fs
-   0x7c3c:	mov    %ax,%gs
-   0x7c3e:	mov    %ax,%ss
+  // LAB 5: Your code here.
+  addr = ROUNDDOWN(addr, PGSIZE);
+  if (!va_is_mapped(addr) || !va_is_dirty(addr)) {
+    return;
+  }
+  if ((r = ide_write(blockno * BLKSECTS, addr, BLKSECTS)) < 0) {
+    panic("in flush_block, ide_write(): %e", r);
+  }
+  if ((r = sys_page_map(0, addr, 0, addr, uvpt[PGNUM(addr)] & PTE_SYSCALL)) < 0)
+    panic("in bc_pgfault, sys_page_map: %e", r);
+}
 ```
+写回磁盘函数，主要步骤为：
+1. 如果未映射或者未修改，直接退出
+1. 写回
+1. 清空PTE_D位
+#### The Block Bitmap
+bitmap中，1为未使用，0为已使用
+##### Exercise 3
+实现fs/fs.c中的alloc_block()，该函数搜索bitmap位数组，返回一个未使用的block，并将其标记为已使用。
+```C
+int alloc_block(void) {
+  // The bitmap consists of one or more blocks.  A single bitmap block
+  // contains the in-use bits for BLKBITSIZE blocks.  There are
+  // super->s_nblocks blocks in the disk altogether.
 
-### Exercise 3
-
-> 处理器在什么时候开始执行32位代码?
-> 究竟是什么原因导致从16位模式切换到32位模式?
-
-在`0x7c2d: ljmp $0x8,$0x7c32`指令之后，地址从16位变为了32位形式 代码在`boot/boot.S`中，还有注释：
-
-**At what point does the processor start executing 32-bit code? What exactly causes the switch from 16- to 32-bit mode?**
-
-```bash
-# Jump to next instruction, but in 32-bit code segment.
-# Switches processor into 32-bit mode.
-ljmp    $PROT_MODE_CSEG, $protcseg
+  // LAB 5: Your code here.
+  uint32_t bmpblock_start = 2;
+  for (uint32_t blockno = 0; blockno < super->s_nblocks; blockno++) {
+    if (block_is_free(blockno)) {                     //搜索free的block
+      bitmap[blockno / 32] &= ~(1 << (blockno % 32)); //标记为已使用
+      flush_block(diskaddr(bmpblock_start +
+                           (blockno / 32) /
+                               NINDIRECT)); //将刚刚修改的bitmap block写到磁盘中
+      return blockno;
+    }
+  }
+  return -E_NO_DISK;
+}
 ```
+遍历查找。
 
-> 引导加载程序执行的最后一条指令是什么?它刚刚加载的内核的第一条指令是什么?
+#### File Operations
+文件系统应该提供一些基本的操作。
+##### Exercise 4
+实现file_block_walk()和file_get_block()。
+`file_block_walk()`
+```C
+static int file_block_walk(struct File *f, uint32_t filebno,
+                           uint32_t **ppdiskbno, bool alloc) {
+  // LAB 5: Your code here.
+  int bn;
+  uint32_t *indirects;
+  if (filebno >= NDIRECT + NINDIRECT)
+    return -E_INVAL;
 
-boot loader的最后一条就在`boot/main.c`中： `((void (*)(void)) (ELFHDR->e_entry))();`
+  if (filebno < NDIRECT) {
+    *ppdiskbno = &(f->f_direct[filebno]);
+  } else {
+    if (f->f_indirect) {
+      indirects = diskaddr(f->f_indirect);
+      *ppdiskbno = &(indirects[filebno - NDIRECT]);
+    } else {
+      if (!alloc)
+        return -E_NOT_FOUND;
+      if ((bn = alloc_block()) < 0)
+        return bn;
+      f->f_indirect = bn;
+      flush_block(diskaddr(bn));
+      indirects = diskaddr(bn);
+      *ppdiskbno = &(indirects[filebno - NDIRECT]);
+    }
+  }
 
-在`kern/entry.S`中能找到第一条指令，其地址为`0x0010000c`，和kernel信息中的起始地址一致
-
-```bash
-entry:
-	movw	$0x1234,0x472			# warm boot
+  return 0;
+}
 ```
+查找f指向文件结构的第filebno个block的存储地址，保存到ppdiskbno中。如果f->f_indirect还没有分配，且alloc为真，那么将分配要给新的block作为该文件的f->f_indirect。类比页表管理的pgdir_walk()。
 
-> 内核的第一条指令在哪里?
+`file_get_block()`
+```C
+int file_get_block(struct File *f, uint32_t filebno, char **blk) {
+  // LAB 5: Your code here.
+  int r;
+  uint32_t *pdiskbno;
+  if ((r = file_block_walk(f, filebno, &pdiskbno, true)) < 0) {
+    return r;
+  }
 
-第一条指令是`movw $0x1234,0x472`，地址为`0x0010000c`
-
-> 引导加载程序如何决定必须读取多少扇区才能从磁盘获取整个内核?
-> 它在哪里找到这些信息?
-
-`boot/main.c`中有代码，可以通过`ELFHDR->e_phnum`来获取扇区数量 通过`objdump -h obj/kern/kernel`可以获得kernel信息
-
-### Loading the kernel
-
-ELF文件头 .text段：存放所有程序的可执行代码 .rodata段：存放所有只读数据的数据段，比如字符串常量。 .data段：存放所有被初始化过的数据段，比如有初始值的全局变量
-
-```bash
-root@c665a16a36dc:~/6.828/lab# objdump -h obj/kern/kernel
-
-obj/kern/kernel:     file format elf32-i386
-
-Sections:
-Idx Name          Size      VMA       LMA       File off  Algn
-  0 .text         000019d9  f0100000  00100000  00001000  2**4
-                  CONTENTS, ALLOC, LOAD, READONLY, CODE
-  1 .rodata       000006c0  f01019e0  001019e0  000029e0  2**5
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  2 .stab         00003b7d  f01020a0  001020a0  000030a0  2**2
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  3 .stabstr      00001953  f0105c1d  00105c1d  00006c1d  2**0
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  4 .data         00009300  f0108000  00108000  00009000  2**12
-                  CONTENTS, ALLOC, LOAD, DATA
-  5 .got          00000008  f0111300  00111300  00012300  2**2
-                  CONTENTS, ALLOC, LOAD, DATA
-  6 .got.plt      0000000c  f0111308  00111308  00012308  2**2
-                  CONTENTS, ALLOC, LOAD, DATA
-  7 .data.rel.local 00001000  f0112000  00112000  00013000  2**12
-                  CONTENTS, ALLOC, LOAD, DATA
-  8 .data.rel.ro.local 00000060  f0113000  00113000  00014000  2**5
-                  CONTENTS, ALLOC, LOAD, DATA
-  9 .bss          00000644  f0113060  00113060  00014060  2**5
-                  ALLOC
- 10 .comment      00000029  00000000  00000000  00014060  2**0
-                  CONTENTS, READONLY
+  int bn;
+  if (*pdiskbno == 0) {
+    if ((bn = alloc_block()) < 0) {
+      return bn;
+    }
+    *pdiskbno = bn;
+    flush_block(diskaddr(bn));
+  }
+  *blk = diskaddr(*pdiskbno);
+  return 0;
+}
 ```
+该函数查找文件第filebno个block对应的虚拟地址addr，将其保存到blk地址处。
+#### The file system interface
+由于其他用户进程不能直接调用这些File system函数，需要通过RPC调用，本质上RPC还是借助IPC机制实现的，普通进程通过IPC向FS进程间发送具体操作和操作数据，然后FS进程执行文件操作，最后又将结果通过IPC返回给普通进程。
+##### Exercise 5
+实现fs/serv.c中的serve_read()。
+```C
+int serve_read(envid_t envid, union Fsipc *ipc) {
+  struct Fsreq_read *req = &ipc->read;
+  struct Fsret_read *ret = &ipc->readRet;
 
-```bash
-root@c665a16a36dc:~/6.828/lab# objdump -h obj/kern/kernel
+  if (debug)
+    cprintf("serve_read %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
 
-obj/kern/kernel:     file format elf32-i386
+  // Lab 5: Your code here:
+  struct OpenFile *o;
+  int r;
+  r = openfile_lookup(envid, req->req_fileid, &o);
+  // cprintf("serve_read():req->req_fileid = %d\n", req->req_fileid);
+  if (r < 0)
+    return r;
+  if ((r = file_read(o->o_file, ret->ret_buf, req->req_n, o->o_fd->fd_offset)) <
+      0)
+    return r;
+  o->o_fd->fd_offset += r;
 
-Sections:
-Idx Name          Size      VMA       LMA       File off  Algn
-  0 .text         000019d9  f0100000  00100000  00001000  2**4
-                  CONTENTS, ALLOC, LOAD, READONLY, CODE
-  1 .rodata       000006c0  f01019e0  001019e0  000029e0  2**5
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  2 .stab         00003b7d  f01020a0  001020a0  000030a0  2**2
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  3 .stabstr      00001953  f0105c1d  00105c1d  00006c1d  2**0
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  4 .data         00009300  f0108000  00108000  00009000  2**12
-                  CONTENTS, ALLOC, LOAD, DATA
-  5 .got          00000008  f0111300  00111300  00012300  2**2
-                  CONTENTS, ALLOC, LOAD, DATA
-  6 .got.plt      0000000c  f0111308  00111308  00012308  2**2
-                  CONTENTS, ALLOC, LOAD, DATA
-  7 .data.rel.local 00001000  f0112000  00112000  00013000  2**12
-                  CONTENTS, ALLOC, LOAD, DATA
-  8 .data.rel.ro.local 00000060  f0113000  00113000  00014000  2**5
-                  CONTENTS, ALLOC, LOAD, DATA
-  9 .bss          00000644  f0113060  00113060  00014060  2**5
-                  ALLOC
- 10 .comment      00000029  00000000  00000000  00014060  2**0
-                  CONTENTS, READONLY
-root@c665a16a36dc:~/6.828/lab# objdump -x obj/kern/kernel
-
-obj/kern/kernel:     file format elf32-i386
-obj/kern/kernel
-architecture: i386, flags 0x00000112:
-EXEC_P, HAS_SYMS, D_PAGED
-start address 0x0010000c
-
-Program Header:
-    LOAD off    0x00001000 vaddr 0xf0100000 paddr 0x00100000 align 2**12
-         filesz 0x00007570 memsz 0x00007570 flags r-x
-    LOAD off    0x00009000 vaddr 0xf0108000 paddr 0x00108000 align 2**12
-         filesz 0x0000b060 memsz 0x0000b6a4 flags rw-
-   STACK off    0x00000000 vaddr 0x00000000 paddr 0x00000000 align 2**4
-         filesz 0x00000000 memsz 0x00000000 flags rwx
-
-Sections:
-Idx Name          Size      VMA       LMA       File off  Algn
-  0 .text         000019d9  f0100000  00100000  00001000  2**4
-                  CONTENTS, ALLOC, LOAD, READONLY, CODE
-  1 .rodata       000006c0  f01019e0  001019e0  000029e0  2**5
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  2 .stab         00003b7d  f01020a0  001020a0  000030a0  2**2
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-  3 .stabstr      00001953  f0105c1d  00105c1d  00006c1d  2**0
-                  CONTENTS, ALLOC, LOAD, READONLY, DATA
-···
-
-SYMBOL TABLE:
-f0100000 l    d  .text	00000000 .text
-f01019e0 l    d  .rodata	00000000 .rodata
-f01020a0 l    d  .stab	00000000 .stab
-f0105c1d l    d  .stabstr	00000000 .stabstr
-f0108000 l    d  .data	00000000 .data
-f0111300 l    d  .got	00000000 .got
-f0111308 l    d  .got.plt	00000000 .got.plt
-f0112000 l    d  .data.rel.local	00000000 .data.rel.local
-f0113000 l    d  .data.rel.ro.local	00000000 .data.rel.ro.local
-f0113060 l    d  .bss	00000000 .bss
-
-···
-
+  return r;
+}
 ```
+通过File ID查找openfile，找到后通过调用fs.c中的函数进行操作。
+##### Exercise 6
+实现fs/serv.c中的serve_write()和lib/file.c中的devfile_write()。
+`serve_write()`
+```C
+int serve_write(envid_t envid, struct Fsreq_write *req) {
+  if (debug)
+    cprintf("serve_write %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
 
-### Exercise 5
-
-> 将boot/Makefrag中的链接地址更改为错误，运行make clean，用make重新编译实验室，然后再次跟踪引导加载程序，看看会发生什么。
-> 别忘了把链接地址改回来，然后再清理!
-
-查看`boot/Makefrag`，找到-Ttext后面的入口地址`start -Ttext 0x7C00` 把0x7C00修改为另一个值，让其错误，比如改为`0x7C04`
-
-`make clean`并重新`make`后再次开启gdb调试 同样在`b *0x7c00`处打上断点并运行到此，`ci`当运行到`0:7c2d`处时发生报错
-
-```bash
-(gdb) si
-[   0:7c2d] => 0x7c2d:	ljmp   $0x8,$0x7c36
-0x00007c2d in ?? ()
-
-DR6=ffff0ff0 DR7=00000400
-EFER=0000000000000000
-Triple fault.  Halting for inspection via QEMU monitor.
+  // LAB 5: Your code here.
+  struct OpenFile *o;
+  int r;
+  if ((r = openfile_lookup(envid, req->req_fileid, &o)) < 0) {
+    return r;
+  }
+  int total = 0;
+  while (1) {
+    r = file_write(o->o_file, req->req_buf, req->req_n, o->o_fd->fd_offset);
+    if (r < 0)
+      return r;
+    total += r;
+    o->o_fd->fd_offset += r;
+    if (req->req_n <= total)
+      break;
+  }
+  return total;
+}
 ```
+类似于serve_read()。
 
-后面的`0x7c36`地址比正确地址多了4，而BIOS 将 boot loader固定加载在`0x7c00`开始的地方，所以这次的跳转就发生了错误
-
-### Exercise 6
-
-> 在BIOS进入引导加载程序时，然后在引导加载程序进入内核时，检查0x00100000处的8个单词的内存。
-> 为什么会有不同?
-> 第二个断点是什么?
-
-`0x00100000`是从BIOS进入到boot loader的地址查看`0x00100000`处的8个word的值
-
-```bash
-(gdb) x/8x 0x00100000
-0x100000:	0x00000000	0x00000000	0x00000000	0x00000000
-0x100010:	0x00000000	0x00000000	0x00000000	0x00000000
-```
-
-程序的入口点是`0x10000c`，在此处打断点，看后面的8个字
-
-```bash
-0x100000:	0x1badb002	0x00000000	0xe4524ffe	0x7205c766
-0x100010:	0x34000004	0x0000b812	0x220f0011	0xc0200
-```
-
-## Part 3: The Kernel
-
-进入内核后，JOS主要进行了
-
-1. 开启分页模式，将虚拟地址[0, 4MB)映射到物理地址[0, 4MB)，[0xF0000000, 0xF0000000+4MB)映射到[0, 4MB）（/kern/entry.S）
-2. 在控制台输出字符串（/kern/init.c）
-3. 测试函数的调用过程 （/kern/init.c）
-
-#### 开启分页模式
-
-操作系统经常被加载到高虚拟地址处，比如0xf0100000，但是并不是所有机器都有这么大的物理内存。可以使用内存管理硬件做到将高地址虚拟地址映射到低地址物理内存。
-
-#### 格式化输出到控制的台
-
-这一小结提供了一些函数，用于将字符串输出到控制台。这些函数分布在kern/printf.c, lib/printfmt.c, kern/console.c中。可以发现真正实现字符串输出的是vprintfmt()函数，其他函数都是对它的包装。vprintfmt()函数很长，大的框架是一个while循环，while循环中首先会处理常规字符。
-
-```c
-while ((ch = *(unsigned char *) fmt++) != '%') {        //先将非格式化字符输出到控制台。
-            if (ch == '\0')                                     //如果没有格式化字符直接返回
-                return;
-            putch(ch, putdat);
-        }
-```
-
-### Exercise 8
-
-> 我们省略了一小段代码——使用“%o”形式的模式打印八进制数所必需的代码。
-> 查找并填充此代码片段。
-
-在`vprintfmt()`中找到case 'o'的地方
-
-```c
-// 从ap指向的可变字符串中获取输出的值
-            num = getuint(&ap, lflag);
-            //设置基数为8
-            base = 8;
-            goto number;
-```
-
-> Explain the interface between `printf.c` and `console.c`. Specifically, what function does `console.c`export? How is this function used by `printf.c`?
-
-这两者的接口为`cputchar`，作用是往输出流中放入一个字符
-
-
-
-> Explain the following from `console.c`:
->
-> ```c
-> if (crt_pos >= CRT_SIZE) {
-> 	int i;
-> memcpy(crt_buf, crt_buf + CRT_COLS, (CRT_SIZE - CRT_COLS) * sizeof(uint16_t));
-> for (i = CRT_SIZE - CRT_COLS; i < CRT_SIZE; i++)
-> 		crt_buf[i] = 0x0700 | ' ';
-> 	crt_pos -= CRT_COLS;
->   }
-> ```
-
-整体上移一行，并在新的一行中填入空格
-
-
-
-> For the following questions you might wish to consult the notes for Lecture 2. These notes cover GCC’s calling convention on the x86.
->
-> Trace the execution of the following code step-by-step:
->
-> ```c
-> int x = 1, y = 3, z = 4;
-> cprintf("x %d, y %x, z %d\n", x, y, z);
-> ```
->
-> - In the call to `cprintf()`, to what does `fmt` point? To what does `ap` point?
-
-`fmt`指向格式化字符串 `"x %d,y %x,z %d\n"`,`ap`指向第一个可选参数`x`
-
-
-
-> Run the following code.
->
-> ```c
-> unsigned int i = 0x00646c72;
->     cprintf("H%x Wo%s", 57616, &i);
-> ```
->
-> What is the output? Explain how this output is arrived out in the step-by-step manner of the previous exercise
-
-output：
-
-```c
-He110 World
-```
-
-- 57616 == 0xe110
-- 0x64 == ‘d’, 0x6c == ‘l’, 0x72 == ‘r’
-
-
-
-> In the following code, what is going to be printed after`y=`? (note: the answer is not a specific value.) Why does this happen?
->
-> ```c
-> cprintf("x=%d y=%d", 3);
-> ```
-
-一个在栈上相邻的值
-
-
-
-> 让我们假设GCC改变了它的调用约定，以便它按照声明顺序将参数推入堆栈，从而最后一个参数被推入。
-> 你必须如何改变cprintfor它的接口，以便它仍然有可能传递一个可变数量的参数?
-
-分析：
-
-- 对于`cprintf`而言，需要知道`fmt`的内容才能确定参数的数量
-- 对于这一种传参方式，需要知道参数的数量才能确定第一个参数的位置
-
-所以解决方案可能有：
-
-1. 新增一个参数，内容为参数数量，在参数表的末尾
-2. 只接受固定的两个参数，第一个为`fmt`，第二个为以NULL结尾的链表的首地址，链表中为参数，类似于`char **argv`
-3. 将可选参数放在前面，`fmt`在最后
-
-
-
-### The Stack
-
-1. 执行call指令前，函数调用者将参数入栈，按照函数列表从右到左的顺序入栈。
-2. call指令会自动将当前eip入栈，ret指令将自动从栈中弹出该值到eip寄存器。
-3. 被调用函数负责：将ebp入栈，esp的值赋给ebp。
-
-![lab1_3](https://github.com/PtNan/OSCD/raw/lab1/assets/lab1_3.png)
-
-### Exercise 9
-
-> 确定内核初始化其堆栈的位置，以及它的堆栈在内存中的确切位置。
-> 内核如何为它的堆栈保留空间?
-> 并且在这个保留区域的“结束”是堆栈指针初始化指向?
-
-/kern/entry.S:75
-
-```bash
-# Set the stack pointer
-movl	$(bootstacktop),%esp
-```
-
-### Exercise10
-
-> 要熟悉x86上的C调用约定，可以在`obj/kern/kernel.asm`中找到`test_backtrace`函数的地址。
-> 在那里设置一个断点，并检查在内核启动后每次调用断点时会发生什么。
-> 每个`test_backtrace`的递归嵌套层在堆栈上推入多少32位的单词，这些单词是什么?
-
-发现每次调用esp缩小0x20，即8 words
-
-### Exercise 11
-
-> 实现上面指定的backtrace函数。
-> 请使用与示例相同的格式，否则评分脚本将会混淆。
-> 当您认为您已经使它正常工作时，运行make grade，看看它的输出是否符合我们的评分脚本的期望，如果不符合，就修复它。
-> 在你提交了你的实验1代码之后，你可以随意改变backtrace函数的输出格式。
-
-既然已经提供了`read_ebp`函数，那么顺着ebp一路摸上去就能得到`return address`和各个参数：
-
-```c
-ebp = (unsigned int *)read_ebp();
-for (;ebp != NULL;) {
-	cprintf("eip %8x  ebp %8x  args %08x %08x %08x %08x %08x\n", 
-			ebp[1], ebp, ebp[2], ebp[3], ebp[4], ebp[5], ebp[6]);
-	ebp = (unsigned int *)(*ebp);
+`devfile_write()`
+```C
+static ssize_t devfile_write(struct Fd *fd, const void *buf, size_t n)
+{
+    // Make an FSREQ_WRITE request to the file system server.  Be
+    // careful: fsipcbuf.write.req_buf is only so large, but
+    // remember that write is always allowed to write *fewer*
+    // bytes than requested.
+    // LAB 5: Your code here
+    int r;
+    fsipcbuf.write.req_fileid = fd->fd_file.id;
+    fsipcbuf.write.req_n = n;
+    memmove(fsipcbuf.write.req_buf, buf, n);
+    return fsipc(FSREQ_WRITE, NULL);
 }
 ```
 
-这些在ics的buffer overflow中见的多了。另一个问题是什么时候停止循环。在entry.S中发现:(entry.S:73)
-
-```bash
-movl	$0x0,%ebp			# nuke frame pointer
+### Spawning Processes
+##### Exercise 7
+实现sys_env_set_trapframe()系统调用。
+```C
+static int sys_env_set_trapframe(envid_t envid, struct Trapframe *tf) {
+  // LAB 5: Your code here.
+  // Remember to check whether the user has supplied us with a good
+  // address!
+  int r;
+  struct Env *e;
+  if ((r = envid2env(envid, &e, 1)) < 0) {
+    return r;
+  }
+  tf->tf_eflags |= FL_IF;
+  tf->tf_eflags &= ~FL_IOPL_MASK; //普通进程不能有IO权限
+  tf->tf_cs = GD_UT | 3;
+  e->env_tf = *tf;
+  return 0;
+}
 ```
-
-也就是说，初始化时ebp为0，当发现ebp为0(NULL)时即可停止循环。
-
-### Exercise 12
-
-> 通过插入对stab_binsearch的调用来查找地址的行号，完成debuginfo_eip的实现。
-> 向内核监视器添加一个backtrace命令，并扩展mon_backtrace的实现，调用debuginfo_eip并为表单的每个堆栈帧打印一行:
-
-```c
-int
-mon_backtrace(int argc, char **argv, struct Trapframe *tf)
+##### Exercise 8
+修改lib/fork.c中的duppage()，使之正确处理有PTE_SHARE标志的页表条目。同时实现lib/spawn.c中的copy_shared_pages()。
+`copy_shared_pages()`
+```C
+static int copy_shared_pages(envid_t child)
 {
-    uint32_t ebp, *ptr_ebp;
-    struct Eipdebuginfo info;
-    ebp = read_ebp();
-    cprintf("Stack backtrace:\n");
-    while (ebp != 0) {
-        ptr_ebp = (uint32_t *)ebp;
-        cprintf("\tebp %x  eip %x  args %08x %08x %08x %08x %08x\n", ebp, ptr_ebp[1], ptr_ebp[2], ptr_ebp[3], ptr_ebp[4], ptr_ebp[5], ptr_ebp[6]);
-        if (debuginfo_eip(ptr_ebp[1], &info) == 0) {
-            uint32_t fn_offset = ptr_ebp[1] - info.eip_fn_addr;
-            cprintf("\t\t%s:%d: %.*s+%d\n", info.eip_file, info.eip_line,info.eip_fn_namelen,  info.eip_fn_name, fn_offset);
+    // LAB 5: Your code here.
+    uintptr_t addr;
+    for (addr = 0; addr < UTOP; addr += PGSIZE) {
+        if ((uvpd[PDX(addr)] & PTE_P) && (uvpt[PGNUM(addr)] & PTE_P) &&
+                (uvpt[PGNUM(addr)] & PTE_U) && (uvpt[PGNUM(addr)] & PTE_SHARE)) {
+            sys_page_map(0, (void*)addr, child, (void*)addr, (uvpt[PGNUM(addr)] & PTE_SYSCALL));
         }
-        ebp = *ptr_ebp;
     }
     return 0;
 }
 ```
+### The keyboard interface
+##### Exercise 9
+```C
+// Handle keyboard and serial interrupts.
+if (tf->tf_trapno == IRQ_OFFSET + IRQ_KBD) {
+  kbd_intr();
+  return;
+}
+if (tf->tf_trapno == IRQ_OFFSET + IRQ_SERIAL) {
+  serial_intr();
+  return;
+}
+```
 
-### Lab1 总结
-
-------
-
-经过这个Lab，我们主要了解了以下内容：
-
-1. 启动顺序：BIOS -> Boot Loader -> Kernel
-2. 各自的简介：
-
-- BIOS:
-  位于 `0x000F 0000` 至 `0x0010 0000`共 64kB 空间中。
-  初始化 PCI 总线以及其他设备，搜索能启动的设备例如软盘、硬盘、光驱等，如果发现了启动盘，就读取盘内的 boot loader 并移交控制权。
-- Boot Loader:
-  位于 `0x7c00`与`0x7dff` 共 512 byte 空间之中。
-  从实模式切换到保护模式，并将 kernel 读取到内存中。跳转到kernel执行。
-- Kernel:
-  位于 `0x10 0000` 开始的物理内存中。被映射到了`0xf010 0000`的高位地址上。
-  开启内存分页机制，启用虚拟内存，I/O的实现，栈的初始化。
+### The Shell
+##### Exercise 10
+目前shell还不支持IO重定向，修改user/sh.c，增加IO该功能。
+```C
+if ((fd = open(t, O_RDONLY)) < 0) {
+    cprintf("open %s for write: %e", t, fd);
+    exit();
+}
+if (fd != 0) {
+    dup(fd, 0);
+    close(fd);
+}
+```
